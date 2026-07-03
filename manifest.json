@@ -1,0 +1,15 @@
+{
+  "name": "台帳 — タスク管理",
+  "short_name": "台帳",
+  "description": "アイテム・TO・DOを一元管理する個人用タスク管理アプリ",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F4F1E9",
+  "theme_color": "#203B4C",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
