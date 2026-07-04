@@ -34,6 +34,8 @@
     --gray-bg:#ECEAE2;
     --danger:#B8503F;
     --danger-bg:#F5E1DC;
+    --review:#6B5B95;
+    --review-bg:#E9E4F3;
     --radius:16px;
     --radius-sm:10px;
   }
@@ -208,6 +210,7 @@
   }
   .to-item.status-do{border-left-color:var(--do); background:var(--do-bg);}
   .to-item.status-due{border-left-color:var(--due); background:var(--due-bg);}
+  .to-item.status-review{border-left-color:var(--review); background:var(--review-bg);}
   .to-item .to-main{flex:1; min-width:0;}
   .to-item .to-title{
     font-weight:700;
@@ -224,7 +227,15 @@
     display:flex;
     gap:8px;
     flex-wrap:wrap;
+    align-items:center;
   }
+  .to-item .to-link{
+    color:var(--accent);
+    font-weight:700;
+    text-decoration:none;
+    white-space:nowrap;
+  }
+  .to-item .to-link:active{opacity:.6;}
   .to-item .to-badge{
     font-size:10px;
     font-weight:700;
@@ -236,6 +247,45 @@
   }
   .to-item.status-do .to-badge{background:var(--do);color:#fff;}
   .to-item.status-due .to-badge{background:var(--due);color:#fff;}
+  .to-item.status-review .to-badge{background:var(--review);color:#fff;}
+  .modal-url-link{
+    display:inline-block;
+    margin-top:8px;
+    font-size:12.5px;
+    font-weight:700;
+    color:var(--accent);
+    text-decoration:none;
+    word-break:break-all;
+  }
+  .item-reminder-tag{
+    display:inline-block;
+    font-size:10px;
+    font-weight:700;
+    color:var(--review);
+    background:var(--review-bg);
+    border-radius:20px;
+    padding:2px 8px;
+    margin-left:6px;
+  }
+  .checkbox-row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-top:14px;
+    font-size:13px;
+    font-weight:700;
+    color:var(--ink);
+  }
+  .checkbox-row input[type=checkbox]{
+    width:18px;height:18px;
+    accent-color:var(--accent);
+  }
+  .checkbox-hint{
+    font-size:11px;
+    color:var(--ink-soft);
+    font-weight:400;
+    margin-top:4px;
+  }
 
   /* ---- dropdown ---- */
   select, input[type=text], input[type=date], input[type=url], textarea{
@@ -546,6 +596,15 @@ function itemName(itemId){
   const it = appData.items.find(i=>i.id===itemId);
   return it ? it.name : '(削除済みアイテム)';
 }
+function getItem(itemId){
+  return appData.items.find(i=>i.id===itemId) || null;
+}
+function addDaysToDateStr(dateStr, days){
+  const [y,m,d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m-1, d);
+  dt.setDate(dt.getDate() + days);
+  return dateToStr(dt);
+}
 function escapeHtml(s){
   return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -566,6 +625,19 @@ async function loadData(){
     storageAvailable = false;
     console.error('保存データの読み込みに失敗しました', e);
   }
+  migrateData();
+}
+function migrateData(){
+  // 既存アイテムに復習リマインド設定を追加（既存データは維持）
+  appData.items.forEach(it=>{
+    if(typeof it.reviewReminder !== 'boolean') it.reviewReminder = false;
+  });
+  // 既存のDO済みTOにdoneAt(完了日)を補完（既存データは維持）
+  appData.todos.forEach(t=>{
+    if(t.status==='DO' && !t.doneAt){
+      t.doneAt = t.createdAt ? dateToStr(new Date(t.createdAt)) : todayStr();
+    }
+  });
 }
 async function saveData(){
   try{
@@ -584,14 +656,32 @@ function showStorageWarning(){
 /* ==========================================================
    TO のステータス判定
    ========================================================== */
+function isReviewDue(todo){
+  if(todo.status !== 'DO' || !todo.doneAt) return false;
+  const item = getItem(todo.itemId);
+  if(!item || !item.reviewReminder) return false;
+  const reviewDate = addDaysToDateStr(todo.doneAt, 2); // 学んだ日を1日目として3日目
+  return todayStr() >= reviewDate;
+}
+function todoDisplayStatus(todo){
+  if(todo.status === 'DO'){
+    return isReviewDue(todo) ? 'REVIEW' : 'DO';
+  }
+  if(todo.deadline === todayStr()) return 'DUE';
+  return 'TO';
+}
 function todoStatusClass(todo){
-  if(todo.status === 'DO') return 'status-do';
-  if(todo.deadline === todayStr()) return 'status-due';
+  const s = todoDisplayStatus(todo);
+  if(s==='REVIEW') return 'status-review';
+  if(s==='DO') return 'status-do';
+  if(s==='DUE') return 'status-due';
   return '';
 }
 function todoBadgeText(todo){
-  if(todo.status === 'DO') return '完了';
-  if(todo.deadline === todayStr()) return '本日期限';
+  const s = todoDisplayStatus(todo);
+  if(s==='REVIEW') return '復習';
+  if(s==='DO') return '完了';
+  if(s==='DUE') return '本日期限';
   return '未完了';
 }
 
@@ -730,6 +820,7 @@ function renderTop(){
 /* 共通: TOカードのHTML */
 function renderTodoCard(t, showItemName=true){
   const cls = todoStatusClass(t);
+  const safeUrl = escapeHtml(t.url||'');
   return `
     <div class="to-item ${cls}" data-open-todo="${t.id}">
       <div class="to-main">
@@ -737,6 +828,7 @@ function renderTodoCard(t, showItemName=true){
         <div class="to-meta">
           ${showItemName ? `<span>${escapeHtml(itemName(t.itemId))}</span>` : ''}
           <span>期限 ${formatDateShort(t.deadline)}</span>
+          ${t.url ? `<a class="to-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">🔗 リンク</a>` : ''}
         </div>
       </div>
       <span class="to-badge">${todoBadgeText(t)}</span>
@@ -800,10 +892,13 @@ function renderItems(){
     return `
       <div class="item-row">
         <div class="item-name" data-open-item="${it.id}" style="border-left:5px solid ${itemColor(it.id)};padding-left:10px;">
-          ${escapeHtml(it.name)}
+          ${escapeHtml(it.name)}${it.reviewReminder ? `<span class="item-reminder-tag">復習リマインド</span>` : ''}
           <div class="item-sub">TO ${todos.length}件・DO ${doCount}件</div>
         </div>
-        <button class="btn btn-danger btn-sm" data-delete-item="${it.id}">削除</button>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-outline btn-sm" data-edit-item="${it.id}">編集</button>
+          <button class="btn btn-danger btn-sm" data-delete-item="${it.id}">削除</button>
+        </div>
       </div>`;
   }).join('');
 
@@ -885,18 +980,25 @@ function renderCalendar(){
 /* ==========================================================
    モーダル: アイテム作成
    ========================================================== */
-function openItemModal(){
+function openItemModal(itemId){
+  const isEdit = !!itemId;
+  const item = isEdit ? appData.items.find(i=>i.id===itemId) : null;
   const overlay = document.getElementById('modalOverlay');
   const content = document.getElementById('modalContent');
   content.innerHTML = `
     <button class="modal-close-x" id="modalCloseX">✕</button>
     <div class="modal-handle"></div>
-    <p class="modal-title">アイテム作成</p>
+    <p class="modal-title">${isEdit ? 'アイテム編集' : 'アイテム作成'}</p>
     <label class="field-label">アイテム名</label>
-    <input type="text" id="newItemName" placeholder="例）英語学習、半導体投資 など" maxlength="40">
+    <input type="text" id="newItemName" placeholder="例）英語学習、半導体投資 など" maxlength="40" value="${item?escapeHtml(item.name):''}">
+    <label class="checkbox-row">
+      <input type="checkbox" id="newItemReminder" ${item&&item.reviewReminder?'checked':''}>
+      復習リマインドを有効にする
+    </label>
+    <p class="checkbox-hint">DOにした日から3日目（2日後）に「復習」ステータスで表示します。学習系のアイテムにおすすめです。</p>
     <div class="btn-row">
       <button class="btn btn-outline" id="modalCancel">キャンセル</button>
-      <button class="btn btn-primary" id="modalSaveItem">作成する</button>
+      <button class="btn btn-primary" id="modalSaveItem">${isEdit ? '保存する' : '作成する'}</button>
     </div>
   `;
   overlay.classList.remove('hidden');
@@ -905,8 +1007,14 @@ function openItemModal(){
   document.getElementById('modalCancel').onclick = closeModal;
   document.getElementById('modalSaveItem').onclick = async ()=>{
     const name = document.getElementById('newItemName').value.trim();
+    const reviewReminder = document.getElementById('newItemReminder').checked;
     if(!name){ alert('アイテム名を入力してください'); return; }
-    appData.items.push({ id: uid(), name, createdAt: Date.now() });
+    if(isEdit){
+      item.name = name;
+      item.reviewReminder = reviewReminder;
+    }else{
+      appData.items.push({ id: uid(), name, reviewReminder, createdAt: Date.now() });
+    }
     await saveData();
     closeModal();
     render();
@@ -951,6 +1059,7 @@ function openTitleModal(){
 function openTodoModal(todoId){
   const isEdit = !!todoId;
   const todo = isEdit ? appData.todos.find(t=>t.id===todoId) : null;
+  const displayStatus = todo ? todoDisplayStatus(todo) : null;
   const overlay = document.getElementById('modalOverlay');
   const content = document.getElementById('modalContent');
 
@@ -974,14 +1083,17 @@ function openTodoModal(todoId){
 
     <label class="field-label">URL（任意）</label>
     <input type="url" id="todoUrl" placeholder="https://..." value="${todo?escapeHtml(todo.url||''):''}">
+    ${todo && todo.url ? `<a class="modal-url-link" href="${escapeHtml(todo.url)}" target="_blank" rel="noopener noreferrer">🔗 ${escapeHtml(todo.url)}</a>` : ''}
 
     <label class="field-label">振り返りメモ（任意）</label>
     <textarea id="todoMemo" placeholder="気づき・反省点など">${todo?escapeHtml(todo.memo||''):''}</textarea>
 
+    ${isEdit && displayStatus==='REVIEW' ? `<p class="checkbox-hint" style="color:var(--review);font-weight:700;margin-top:10px;">📌 復習リマインド：内容を復習したら「DOにする」を押してください。</p>` : ''}
+
     ${isEdit ? `
       <div class="btn-row">
         <button class="btn btn-to btn-sm" id="btnMarkTo" ${todo.status!=='DO'?'style="display:none;"':''}>TOに戻す</button>
-        <button class="btn btn-do btn-sm" id="btnMarkDo" ${todo.status==='DO'?'style="display:none;"':''}>DOにする</button>
+        <button class="btn btn-do btn-sm" id="btnMarkDo" ${(todo.status!=='DO' || displayStatus==='REVIEW')?'':'style="display:none;"'}>DOにする</button>
       </div>
     ` : ''}
 
@@ -996,12 +1108,14 @@ function openTodoModal(todoId){
   if(isEdit){
     document.getElementById('btnMarkDo').onclick = async ()=>{
       todo.status = 'DO';
+      todo.doneAt = todayStr();
       await saveData();
       closeModal();
       render();
     };
     document.getElementById('btnMarkTo').onclick = async ()=>{
       todo.status = 'TO';
+      todo.doneAt = null;
       await saveData();
       closeModal();
       render();
@@ -1033,7 +1147,7 @@ function openTodoModal(todoId){
     }else{
       appData.todos.push({
         id: uid(), itemId, title, deadline, url, memo,
-        status: 'TO', createdAt: Date.now()
+        status: 'TO', doneAt: null, createdAt: Date.now()
       });
     }
     await saveData();
@@ -1057,10 +1171,10 @@ function attachScreenEvents(){
   });
 
   const btnCreateItemTop = document.getElementById('btnCreateItemTop');
-  if(btnCreateItemTop) btnCreateItemTop.addEventListener('click', openItemModal);
+  if(btnCreateItemTop) btnCreateItemTop.addEventListener('click', ()=> openItemModal());
 
   const btnCreateItemList = document.getElementById('btnCreateItemList');
-  if(btnCreateItemList) btnCreateItemList.addEventListener('click', openItemModal);
+  if(btnCreateItemList) btnCreateItemList.addEventListener('click', ()=> openItemModal());
 
   const btnGoItems = document.getElementById('btnGoItems');
   if(btnGoItems) btnGoItems.addEventListener('click', ()=> switchTab('items'));
@@ -1078,6 +1192,13 @@ function attachScreenEvents(){
     el.addEventListener('click', ()=>{
       selectedItemId = el.dataset.openItem;
       switchTab('schedule');
+    });
+  });
+
+  screen.querySelectorAll('[data-edit-item]').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      openItemModal(el.dataset.editItem);
     });
   });
 
