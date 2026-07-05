@@ -368,6 +368,36 @@
   .legend-item{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-soft);}
   .legend-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
 
+  /* ---- chart filter chips ---- */
+  .chart-filter-row{display:flex;flex-wrap:wrap;gap:8px;}
+  .chart-filter-chip{
+    font-family:'Noto Sans JP',sans-serif;
+    font-size:12.5px;
+    font-weight:700;
+    padding:7px 12px;
+    border-radius:20px;
+    border:1.5px solid var(--line-strong);
+    cursor:pointer;
+    white-space:nowrap;
+    transition:opacity .1s ease;
+  }
+  .chart-filter-chip:active{opacity:.7;}
+  .chart-filter-actions{
+    display:flex;
+    gap:14px;
+    margin-top:12px;
+  }
+  .chart-filter-link{
+    background:none;
+    border:none;
+    font-size:11.5px;
+    font-weight:700;
+    color:var(--accent);
+    text-decoration:underline;
+    cursor:pointer;
+    padding:0;
+  }
+
   /* ---- calendar ---- */
   .cal-nav{
     display:flex;
@@ -563,7 +593,7 @@
 /* ==========================================================
    データ層
    ========================================================== */
-let appData = { items: [], todos: [], settings: { title: '台帳' } };
+let appData = { items: [], todos: [], settings: { title: '台帳', hiddenChartItemIds: [] } };
 let currentTab = 'top';
 let selectedItemId = null;      // 進捗管理タブで選択中のアイテム
 let calendarViewDate = new Date();
@@ -598,6 +628,17 @@ function itemName(itemId){
 }
 function getItem(itemId){
   return appData.items.find(i=>i.id===itemId) || null;
+}
+function isItemVisibleInCharts(itemId){
+  return !appData.settings.hiddenChartItemIds.includes(itemId);
+}
+async function toggleChartItemVisibility(itemId){
+  const list = appData.settings.hiddenChartItemIds;
+  const idx = list.indexOf(itemId);
+  if(idx>=0) list.splice(idx,1);
+  else list.push(itemId);
+  await saveData();
+  render();
 }
 function addDaysToDateStr(dateStr, days){
   const [y,m,d] = dateStr.split('-').map(Number);
@@ -734,7 +775,7 @@ async function loadData(){
       const parsed = JSON.parse(raw);
       appData.items = parsed.items || [];
       appData.todos = parsed.todos || [];
-      appData.settings = Object.assign({ title: '台帳' }, parsed.settings || {});
+      appData.settings = Object.assign({ title: '台帳', hiddenChartItemIds: [] }, parsed.settings || {});
     }
   }catch(e){
     // このブラウザ／表示方法では保存機能が使えない
@@ -759,6 +800,9 @@ function migrateData(){
       t.recurrence = null;
     }
   });
+  if(!Array.isArray(appData.settings.hiddenChartItemIds)){
+    appData.settings.hiddenChartItemIds = [];
+  }
 }
 async function saveData(){
   try{
@@ -852,19 +896,43 @@ function renderTop(){
     todayHtml = todayTodos.map(t=>renderTodoCard(t)).join('');
   }
 
-  // 完了(DO)数を集計
-  const itemStats = appData.items.map(it=>{
+  // 完了(DO)数を集計（表示アイテムでフィルター）
+  const visibleItems = appData.items.filter(it=>isItemVisibleInCharts(it.id));
+  const itemStats = visibleItems.map(it=>{
     const todos = appData.todos.filter(t=>t.itemId===it.id);
     const doCount = todos.filter(t=>t.status==='DO').length;
     const toCount = todos.filter(t=>t.status!=='DO').length;
     return { item: it, doCount, toCount, total: doCount+toCount };
   });
 
+  // フィルターチップ（両グラフ共通）
+  let filterHtml = '';
+  if(appData.items.length===0){
+    filterHtml = `<p class="today-empty">アイテムを作成すると、ここで表示・非表示を選べます。</p>`;
+  }else{
+    const chips = appData.items.map(it=>{
+      const hidden = !isItemVisibleInCharts(it.id);
+      const color = itemColor(it.id);
+      const style = hidden
+        ? `border-color:var(--line-strong);color:var(--ink-faint);background:transparent;`
+        : `border-color:${color};color:${color};background:${color}1A;`;
+      return `<button class="chart-filter-chip" data-toggle-chart-item="${it.id}" style="${style}">${hidden?'☐':'☑'} ${escapeHtml(it.name)}</button>`;
+    }).join('');
+    filterHtml = `
+      <div class="chart-filter-row">${chips}</div>
+      <div class="chart-filter-actions">
+        <button class="chart-filter-link" id="btnShowAllCharts">すべて表示</button>
+        <button class="chart-filter-link" id="btnHideAllCharts">すべて非表示</button>
+      </div>`;
+  }
+
   const pieData = itemStats.filter(s=>s.doCount>0);
   const pieTotal = pieData.reduce((sum,s)=>sum+s.doCount,0);
 
   let pieSvg;
-  if(pieTotal===0){
+  if(appData.items.length>0 && visibleItems.length===0){
+    pieSvg = `<div class="empty-state"><div class="glyph">◌</div>表示するアイテムが選ばれていません</div>`;
+  }else if(pieTotal===0){
     pieSvg = `<div class="empty-state"><div class="glyph">◌</div>完了したタスクがまだありません</div>`;
   }else{
     const r=62, cx=76, cy=76, sw=26;
@@ -898,7 +966,9 @@ function renderTop(){
   const barData = [...itemStats].filter(s=>s.total>0).sort((a,b)=> b.doCount-a.doCount);
   const maxTotal = Math.max(1, ...barData.map(s=>s.total));
   let barsHtml;
-  if(barData.length===0){
+  if(appData.items.length>0 && visibleItems.length===0){
+    barsHtml = `<div class="empty-state"><div class="glyph">▭</div>表示するアイテムが選ばれていません</div>`;
+  }else if(barData.length===0){
     barsHtml = `<div class="empty-state"><div class="glyph">▭</div>アイテムを作成してTOを登録しましょう</div>`;
   }else{
     barsHtml = barData.map(s=>{
@@ -927,12 +997,17 @@ function renderTop(){
     <button class="btn btn-primary btn-block" id="btnCreateItemTop">＋ アイテム作成</button>
 
     <div class="card" style="margin-top:16px;">
-      <p class="section-title"><span class="num">2</span>完了タスクの内訳</p>
+      <p class="section-title"><span class="num">2</span>表示するアイテムを選択</p>
+      ${filterHtml}
+    </div>
+
+    <div class="card">
+      <p class="section-title"><span class="num">3</span>完了タスクの内訳</p>
       ${pieSvg}
     </div>
 
     <div class="card">
-      <p class="section-title"><span class="num">3</span>アイテム別 進捗（DO多い順）</p>
+      <p class="section-title"><span class="num">4</span>アイテム別 進捗（DO多い順）</p>
       ${barsHtml}
     </div>
   `;
@@ -1438,6 +1513,22 @@ function attachScreenEvents(){
 
   const btnGoItems = document.getElementById('btnGoItems');
   if(btnGoItems) btnGoItems.addEventListener('click', ()=> switchTab('items'));
+
+  screen.querySelectorAll('[data-toggle-chart-item]').forEach(el=>{
+    el.addEventListener('click', ()=> toggleChartItemVisibility(el.dataset.toggleChartItem));
+  });
+  const btnShowAllCharts = document.getElementById('btnShowAllCharts');
+  if(btnShowAllCharts) btnShowAllCharts.addEventListener('click', async ()=>{
+    appData.settings.hiddenChartItemIds = [];
+    await saveData();
+    render();
+  });
+  const btnHideAllCharts = document.getElementById('btnHideAllCharts');
+  if(btnHideAllCharts) btnHideAllCharts.addEventListener('click', async ()=>{
+    appData.settings.hiddenChartItemIds = appData.items.map(it=>it.id);
+    await saveData();
+    render();
+  });
 
   const itemSelect = document.getElementById('itemSelect');
   if(itemSelect) itemSelect.addEventListener('change', (e)=>{
