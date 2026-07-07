@@ -308,7 +308,7 @@
     margin:14px 0 6px;
   }
   label.field-label:first-child{margin-top:0;}
-  textarea{resize:vertical;min-height:70px;}
+  textarea{resize:vertical;min-height:160px;font-size:15px;line-height:1.6;}
 
   /* ---- item chip (item list) ---- */
   .item-row{
@@ -886,12 +886,20 @@ function render(){
 function renderTop(){
   const today = todayStr();
   const todayTodos = appData.todos
-    .filter(t=>t.deadline===today)
-    .sort((a,b)=> a.status===b.status ? 0 : (a.status==='DO'?1:-1));
+    .filter(t=> t.deadline===today || todoDisplayStatus(t)==='REVIEW')
+    .sort((a,b)=>{
+      const rank = (t)=>{
+        const s = todoDisplayStatus(t);
+        if(s==='DUE' || s==='TO') return 0;
+        if(s==='REVIEW') return 1;
+        return 2; // DO
+      };
+      return rank(a) - rank(b);
+    });
 
   let todayHtml = '';
   if(todayTodos.length===0){
-    todayHtml = `<p class="today-empty">本日期限のTOはありません。</p>`;
+    todayHtml = `<p class="today-empty">本日期限のTO・復習リマインドはありません。</p>`;
   }else{
     todayHtml = todayTodos.map(t=>renderTodoCard(t)).join('');
   }
@@ -990,7 +998,7 @@ function renderTop(){
 
   return `
     <div class="card">
-      <p class="section-title"><span class="num">1</span>${formatDateJP(today)}・本日期限のTO</p>
+      <p class="section-title"><span class="num">1</span>${formatDateJP(today)}・本日のTO / 復習リマインド</p>
       ${todayHtml}
     </div>
 
@@ -1343,6 +1351,14 @@ function openTodoModal(todoId){
   `;
   overlay.classList.remove('hidden');
   document.getElementById('modalCloseX').onclick = closeModal;
+
+  const memoEl = document.getElementById('todoMemo');
+  const autoGrowMemo = ()=>{
+    memoEl.style.height = 'auto';
+    memoEl.style.height = memoEl.scrollHeight + 'px';
+  };
+  memoEl.addEventListener('input', autoGrowMemo);
+  autoGrowMemo();
 
   if(!isEdit){
     const freqSelect = document.getElementById('todoRecurFreq');
