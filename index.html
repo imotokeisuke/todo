@@ -211,6 +211,7 @@
   .to-item.status-do{border-left-color:var(--do); background:var(--do-bg);}
   .to-item.status-due{border-left-color:var(--due); background:var(--due-bg);}
   .to-item.status-review{border-left-color:var(--review); background:var(--review-bg);}
+  .to-item.status-overdue{border-left-color:var(--danger); background:var(--danger-bg);}
   .to-item .to-main{flex:1; min-width:0;}
   .to-item .to-title{
     font-weight:700;
@@ -248,6 +249,7 @@
   .to-item.status-do .to-badge{background:var(--do);color:#fff;}
   .to-item.status-due .to-badge{background:var(--due);color:#fff;}
   .to-item.status-review .to-badge{background:var(--review);color:#fff;}
+  .to-item.status-overdue .to-badge{background:var(--danger);color:#fff;}
   .modal-url-link{
     display:inline-block;
     margin-top:8px;
@@ -752,6 +754,8 @@ function ensureSeriesGenerated(seriesId){
       status: 'TO',
       doneAt: null,
       createdAt: Date.now(),
+      reviewReminderOn: true,
+      reviewStage: 0,
       recurrence: rule
     });
     n++;
@@ -799,6 +803,12 @@ function migrateData(){
     if(typeof t.recurrence === 'undefined'){
       t.recurrence = null;
     }
+    if(typeof t.reviewReminderOn !== 'boolean'){
+      t.reviewReminderOn = true;
+    }
+    if(typeof t.reviewStage !== 'number'){
+      t.reviewStage = 0;
+    }
   });
   if(!Array.isArray(appData.settings.hiddenChartItemIds)){
     appData.settings.hiddenChartItemIds = [];
@@ -821,17 +831,25 @@ function showStorageWarning(){
 /* ==========================================================
    TO のステータス判定
    ========================================================== */
+function reviewOffsetDays(stage){
+  if(stage <= 0) return 2;   // 1回目：DOから3日目
+  if(stage === 1) return 7;  // 2回目：DOから1週間後
+  return 30;                 // 3回目以降：DOから1か月後
+}
 function isReviewDue(todo){
   if(todo.status !== 'DO' || !todo.doneAt) return false;
   const item = getItem(todo.itemId);
   if(!item || !item.reviewReminder) return false;
-  const reviewDate = addDaysToDateStr(todo.doneAt, 2); // 学んだ日を1日目として3日目
+  if(todo.reviewReminderOn === false) return false;
+  const stage = todo.reviewStage || 0;
+  const reviewDate = addDaysToDateStr(todo.doneAt, reviewOffsetDays(stage));
   return todayStr() >= reviewDate;
 }
 function todoDisplayStatus(todo){
   if(todo.status === 'DO'){
     return isReviewDue(todo) ? 'REVIEW' : 'DO';
   }
+  if(todo.deadline < todayStr()) return 'OVERDUE';
   if(todo.deadline === todayStr()) return 'DUE';
   return 'TO';
 }
@@ -840,6 +858,7 @@ function todoStatusClass(todo){
   if(s==='REVIEW') return 'status-review';
   if(s==='DO') return 'status-do';
   if(s==='DUE') return 'status-due';
+  if(s==='OVERDUE') return 'status-overdue';
   return '';
 }
 function todoBadgeText(todo){
@@ -847,6 +866,7 @@ function todoBadgeText(todo){
   if(s==='REVIEW') return '復習';
   if(s==='DO') return '完了';
   if(s==='DUE') return '本日期限';
+  if(s==='OVERDUE') return '期限切れ';
   return '未完了';
 }
 
@@ -886,20 +906,26 @@ function render(){
 function renderTop(){
   const today = todayStr();
   const todayTodos = appData.todos
-    .filter(t=> t.deadline===today || todoDisplayStatus(t)==='REVIEW')
+    .filter(t=>{
+      const s = todoDisplayStatus(t);
+      return s==='DUE' || s==='OVERDUE' || s==='REVIEW';
+    })
     .sort((a,b)=>{
       const rank = (t)=>{
         const s = todoDisplayStatus(t);
-        if(s==='DUE' || s==='TO') return 0;
-        if(s==='REVIEW') return 1;
-        return 2; // DO
+        if(s==='OVERDUE') return 0;
+        if(s==='DUE') return 1;
+        if(s==='REVIEW') return 2;
+        return 3;
       };
-      return rank(a) - rank(b);
+      const r = rank(a) - rank(b);
+      if(r !== 0) return r;
+      return (a.deadline||'').localeCompare(b.deadline||'');
     });
 
   let todayHtml = '';
   if(todayTodos.length===0){
-    todayHtml = `<p class="today-empty">本日期限のTO・復習リマインドはありません。</p>`;
+    todayHtml = `<p class="today-empty">対応が必要なTOはありません。</p>`;
   }else{
     todayHtml = todayTodos.map(t=>renderTodoCard(t)).join('');
   }
@@ -998,7 +1024,7 @@ function renderTop(){
 
   return `
     <div class="card">
-      <p class="section-title"><span class="num">1</span>${formatDateJP(today)}・本日のTO / 復習リマインド</p>
+      <p class="section-title"><span class="num">1</span>${formatDateJP(today)}・対応が必要なTO</p>
       ${todayHtml}
     </div>
 
@@ -1337,6 +1363,19 @@ function openTodoModal(todoId){
 
     ${isEdit && displayStatus==='REVIEW' ? `<p class="checkbox-hint" style="color:var(--review);font-weight:700;margin-top:10px;">📌 復習リマインド：内容を復習したら「DOにする」を押してください。</p>` : ''}
 
+    ${isEdit && todo.status==='DO' && getItem(todo.itemId) && getItem(todo.itemId).reviewReminder ? `
+      <p class="checkbox-hint" style="margin-top:10px;">
+        ${todo.reviewReminderOn !== false
+          ? `🔁 復習リマインド：オン（次回の目安 ${formatDateShort(addDaysToDateStr(todo.doneAt, reviewOffsetDays(todo.reviewStage||0)))}）`
+          : `⏸ 復習リマインド：オフ（停止中）`}
+      </p>
+      <div class="btn-row">
+        <button class="btn btn-outline btn-sm btn-block" id="btnToggleReviewReminder">
+          ${todo.reviewReminderOn !== false ? '復習リマインドをオフにする' : '復習リマインドをオンにする'}
+        </button>
+      </div>
+    ` : ''}
+
     ${isEdit ? `
       <div class="btn-row">
         <button class="btn btn-to btn-sm" id="btnMarkTo" ${todo.status!=='DO'?'style="display:none;"':''}>TOに戻す</button>
@@ -1378,8 +1417,15 @@ function openTodoModal(todoId){
 
   if(isEdit){
     document.getElementById('btnMarkDo').onclick = async ()=>{
+      const wasReview = displayStatus==='REVIEW';
       todo.status = 'DO';
+      if(wasReview){
+        todo.reviewStage = (todo.reviewStage||0) + 1;
+      }else{
+        todo.reviewStage = 0;
+      }
       todo.doneAt = todayStr();
+      todo.reviewReminderOn = true;
       await saveData();
       closeModal();
       render();
@@ -1391,6 +1437,20 @@ function openTodoModal(todoId){
       closeModal();
       render();
     };
+    const btnToggleReviewReminder = document.getElementById('btnToggleReviewReminder');
+    if(btnToggleReviewReminder){
+      btnToggleReviewReminder.onclick = async ()=>{
+        if(todo.reviewReminderOn !== false){
+          todo.reviewReminderOn = false;
+        }else{
+          todo.reviewReminderOn = true;
+          todo.reviewStage = Math.max(todo.reviewStage||0, 1); // 2回目以降の日数設定を使う
+        }
+        await saveData();
+        closeModal();
+        render();
+      };
+    }
     document.getElementById('btnDeleteTodo').onclick = ()=>{
       if(todo.recurrence){
         openDeleteRecurringChoice(todo);
@@ -1457,6 +1517,7 @@ function openTodoModal(todoId){
         deadline: recurrence ? recurrence.startDate : deadline,
         url, memo,
         status: 'TO', doneAt: null, createdAt: Date.now(),
+        reviewReminderOn: true, reviewStage: 0,
         recurrence
       });
 
