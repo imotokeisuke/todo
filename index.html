@@ -584,47 +584,7 @@
   }
   .field-hint{font-size:11px;color:var(--ink-faint);margin-top:4px;}
 
-  /* ---- cloud sync gate ---- */
-  .sync-gate{
-    position:fixed;
-    inset:0;
-    background:rgba(32,59,76,0.92);
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    padding:24px;
-    z-index:200;
-  }
-  .sync-gate.hidden{display:none;}
-  .sync-gate-box{
-    background:var(--bg);
-    border-radius:20px;
-    padding:26px 22px;
-    max-width:380px;
-    width:100%;
-    max-height:90vh;
-    overflow-y:auto;
-  }
-  .sync-gate-title{
-    font-family:'Zen Maru Gothic',sans-serif;
-    font-weight:700;
-    font-size:18px;
-    color:var(--accent-deep);
-    margin:0 0 8px;
-  }
-  .sync-gate-desc{
-    font-size:12.5px;
-    color:var(--ink-soft);
-    line-height:1.7;
-    margin:0 0 16px;
-  }
-  .sync-gate-error{
-    color:var(--danger);
-    font-size:12px;
-    font-weight:700;
-    min-height:16px;
-    margin:8px 0 0;
-  }
+  /* ---- cloud sync (settings modal) ---- */
   .sync-status-line{
     font-size:12.5px;
     color:var(--ink-soft);
@@ -674,23 +634,6 @@
 
 <div class="modal-overlay hidden" id="modalOverlay">
   <div class="modal-content" id="modalContent"></div>
-</div>
-
-<div class="sync-gate hidden" id="syncGate">
-  <div class="sync-gate-box">
-    <p class="sync-gate-title">☁️ クラウド同期にサインイン</p>
-    <p class="sync-gate-desc">メールアドレスとパスワードでサインインすると、他の端末とデータを同期できます。初めての場合は「新規登録」してください。</p>
-    <label class="field-label">メールアドレス</label>
-    <input type="email" id="syncEmail" placeholder="you@example.com" autocomplete="email">
-    <label class="field-label">パスワード</label>
-    <input type="password" id="syncPassword" placeholder="6文字以上" autocomplete="current-password">
-    <p class="sync-gate-error" id="syncError"></p>
-    <div class="btn-row">
-      <button class="btn btn-outline" id="syncSignUpBtn">新規登録</button>
-      <button class="btn btn-primary" id="syncSignInBtn">サインイン</button>
-    </div>
-    <button class="chart-filter-link" id="syncSkipBtn" style="margin-top:16px;">後で設定する（この端末のみで使う）</button>
-  </div>
 </div>
 
 <script>
@@ -928,7 +871,7 @@ async function saveData(){
     console.error('保存に失敗しました', e);
     showStorageWarning();
   }
-  if(FIREBASE_CONFIGURED && fbUser && !applyingRemoteData){
+  if(FIREBASE_CONFIGURED && getSyncCode() && !applyingRemoteData){
     pushToCloud();
   }
 }
@@ -948,33 +891,54 @@ const FIREBASE_CONFIGURED = !!(
   window.FIREBASE_CONFIG.apiKey !== 'YOUR_API_KEY' &&
   typeof firebase !== 'undefined'
 );
+const SYNC_CODE_KEY = 'cloudSyncCode';
 let fbAuth = null;
 let fbDb = null;
-let fbUser = null;
 let fbUnsubscribe = null;
 let applyingRemoteData = false; // 自分の書き込みでのスナップショット発火による無限ループ防止
 
-function initFirebase(){
+function getSyncCode(){
+  return window.localStorage.getItem(SYNC_CODE_KEY);
+}
+function setSyncCode(code){
+  if(code) window.localStorage.setItem(SYNC_CODE_KEY, code);
+  else window.localStorage.removeItem(SYNC_CODE_KEY);
+}
+function generateSyncCode(){
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 紛らわしい0/O, 1/Iを除外
+  let s = '';
+  for(let i=0;i<10;i++) s += chars[Math.floor(Math.random()*chars.length)];
+  return s;
+}
+function syncDocRef(code){
+  return fbDb.collection('syncData').doc(code);
+}
+
+async function initFirebase(){
   if(!FIREBASE_CONFIGURED) return;
   try{
     firebase.initializeApp(window.FIREBASE_CONFIG);
     fbAuth = firebase.auth();
     fbDb = firebase.firestore();
-    fbAuth.onAuthStateChanged(handleAuthStateChanged);
+    await ensureAnonAuth();
+    const code = getSyncCode();
+    if(code){
+      try{
+        await connectSyncCode(code, { createIfMissing: true });
+        render();
+      }catch(e){
+        console.error('同期の再接続に失敗しました', e);
+      }
+    }
   }catch(e){
     console.error('Firebaseの初期化に失敗しました', e);
   }
 }
 
-function cloudDocRef(){
-  return fbDb.collection('users').doc(fbUser.uid);
-}
-
-function showSyncGate(show){
-  const el = document.getElementById('syncGate');
-  if(el) el.classList.toggle('hidden', !show);
-  const errEl = document.getElementById('syncError');
-  if(errEl) errEl.textContent = '';
+async function ensureAnonAuth(){
+  if(!FIREBASE_CONFIGURED) return;
+  if(fbAuth.currentUser) return;
+  await fbAuth.signInAnonymously();
 }
 
 function updateCloudStatusUI(){
@@ -985,40 +949,32 @@ function updateCloudStatusUI(){
     return;
   }
   btn.classList.remove('hidden');
-  btn.style.color = fbUser ? 'var(--do)' : 'var(--ink-faint)';
+  btn.style.color = getSyncCode() ? 'var(--do)' : 'var(--ink-faint)';
 }
 
-async function handleAuthStateChanged(user){
-  fbUser = user;
-  if(fbUnsubscribe){ fbUnsubscribe(); fbUnsubscribe = null; }
-  if(user){
-    window.localStorage.removeItem('skipCloudSync');
-    showSyncGate(false);
-    await syncWithCloudOnSignIn();
-    attachCloudListener();
+// code: 同期コード。createIfMissing=trueなら、そのコードのデータがまだ無い場合に今のローカルデータをアップロードする。
+// falseの場合、データが無ければエラー（NOT_FOUND）を投げる（他端末のコードに接続する時用）。
+async function connectSyncCode(code, { createIfMissing }){
+  await ensureAnonAuth();
+  const ref = syncDocRef(code);
+  const snap = await ref.get();
+  if(snap.exists){
+    applyRemoteSnapshotData(snap.data());
+  }else if(createIfMissing){
+    const clean = JSON.parse(JSON.stringify(appData));
+    await ref.set(clean);
   }else{
-    if(!window.localStorage.getItem('skipCloudSync')){
-      showSyncGate(true);
-    }
+    const err = new Error('NOT_FOUND');
+    err.code = 'NOT_FOUND';
+    throw err;
   }
-  updateCloudStatusUI();
+  setSyncCode(code);
+  attachCloudListener(code);
 }
 
-async function syncWithCloudOnSignIn(){
-  try{
-    const snap = await cloudDocRef().get();
-    if(snap.exists){
-      // クラウドに既存データがある場合はそちらを正とする
-      applyRemoteSnapshotData(snap.data());
-    }else{
-      // クラウドにまだ何もない場合は、今のローカルデータをアップロードする
-      await pushToCloud();
-    }
-  }catch(e){
-    console.error('クラウド同期に失敗しました', e);
-    alert('クラウドとの同期に失敗しました。しばらくしてから再度お試しください。');
-  }
-  render();
+function disconnectSync(){
+  if(fbUnsubscribe){ fbUnsubscribe(); fbUnsubscribe = null; }
+  setSyncCode(null);
 }
 
 function applyRemoteSnapshotData(remote){
@@ -1032,9 +988,9 @@ function applyRemoteSnapshotData(remote){
   applyingRemoteData = false;
 }
 
-function attachCloudListener(){
-  if(!fbUser) return;
-  fbUnsubscribe = cloudDocRef().onSnapshot(snap=>{
+function attachCloudListener(code){
+  if(fbUnsubscribe){ fbUnsubscribe(); fbUnsubscribe = null; }
+  fbUnsubscribe = syncDocRef(code).onSnapshot(snap=>{
     if(!snap.exists || applyingRemoteData) return;
     applyRemoteSnapshotData(snap.data());
     render();
@@ -1044,103 +1000,118 @@ function attachCloudListener(){
 }
 
 async function pushToCloud(){
-  if(!FIREBASE_CONFIGURED || !fbUser || applyingRemoteData) return;
+  const code = getSyncCode();
+  if(!FIREBASE_CONFIGURED || !code || applyingRemoteData) return;
   try{
+    await ensureAnonAuth();
     const clean = JSON.parse(JSON.stringify(appData)); // undefinedを除去してFirestoreの制約に合わせる
-    await cloudDocRef().set(clean);
+    await syncDocRef(code).set(clean);
   }catch(e){
     console.error('クラウドへの保存に失敗しました', e);
   }
 }
 
-function translateFirebaseAuthError(e){
-  const code = e && e.code || '';
-  const map = {
-    'auth/invalid-email': 'メールアドレスの形式が正しくありません。',
-    'auth/missing-password': 'パスワードを入力してください。',
-    'auth/weak-password': 'パスワードは6文字以上にしてください。',
-    'auth/email-already-in-use': 'このメールアドレスは既に登録されています。サインインをお試しください。',
-    'auth/invalid-credential': 'メールアドレスまたはパスワードが正しくありません。',
-    'auth/wrong-password': 'メールアドレスまたはパスワードが正しくありません。',
-    'auth/user-not-found': 'このメールアドレスはまだ登録されていません。新規登録してください。',
-    'auth/too-many-requests': '試行回数が多すぎます。しばらくしてから再度お試しください。',
-    'auth/network-request-failed': 'ネットワークに接続できませんでした。'
-  };
-  return map[code] || ('エラーが発生しました：' + (e && e.message ? e.message : code));
-}
-
-function setupSyncGateEvents(){
-  const signInBtn = document.getElementById('syncSignInBtn');
-  const signUpBtn = document.getElementById('syncSignUpBtn');
-  const skipBtn = document.getElementById('syncSkipBtn');
-  const errEl = document.getElementById('syncError');
-  if(!signInBtn) return;
-
-  const getCreds = ()=>({
-    email: document.getElementById('syncEmail').value.trim(),
-    password: document.getElementById('syncPassword').value
-  });
-
-  signInBtn.addEventListener('click', async ()=>{
-    const { email, password } = getCreds();
-    errEl.textContent = '';
-    if(!email || !password){ errEl.textContent = 'メールアドレスとパスワードを入力してください。'; return; }
-    try{
-      await fbAuth.signInWithEmailAndPassword(email, password);
-    }catch(e){
-      errEl.textContent = translateFirebaseAuthError(e);
-    }
-  });
-
-  signUpBtn.addEventListener('click', async ()=>{
-    const { email, password } = getCreds();
-    errEl.textContent = '';
-    if(!email || !password){ errEl.textContent = 'メールアドレスとパスワードを入力してください。'; return; }
-    try{
-      await fbAuth.createUserWithEmailAndPassword(email, password);
-    }catch(e){
-      errEl.textContent = translateFirebaseAuthError(e);
-    }
-  });
-
-  skipBtn.addEventListener('click', ()=>{
-    window.localStorage.setItem('skipCloudSync', '1');
-    showSyncGate(false);
-  });
-}
-
-function openCloudStatusModal(){
+function openSyncSettingsModal(){
   const overlay = document.getElementById('modalOverlay');
   const content = document.getElementById('modalContent');
-  if(!fbUser){
+
+  if(!FIREBASE_CONFIGURED){
     content.innerHTML = `
       <button class="modal-close-x" id="modalCloseX">✕</button>
       <div class="modal-handle"></div>
-      <p class="modal-title">☁️ クラウド同期</p>
-      <p class="sync-status-line">まだサインインしていません。サインインすると他の端末とデータを同期できます。</p>
-      <button class="btn btn-primary btn-block" id="btnOpenSyncGate">サインインする</button>
+      <p class="modal-title">☁️ 同期設定</p>
+      <p class="sync-status-line">Firebaseが設定されていません。README.mdの手順に従って設定すると、他の端末とログイン不要でデータを同期できるようになります。</p>
     `;
     overlay.classList.remove('hidden');
     document.getElementById('modalCloseX').onclick = closeModal;
-    document.getElementById('btnOpenSyncGate').onclick = ()=>{
-      closeModal();
-      showSyncGate(true);
-    };
     return;
   }
-  content.innerHTML = `
-    <button class="modal-close-x" id="modalCloseX">✕</button>
-    <div class="modal-handle"></div>
-    <p class="modal-title">☁️ クラウド同期</p>
-    <p class="sync-status-line">サインイン中：${escapeHtml(fbUser.email||'')}<br>他の端末で同じアカウントにサインインすると、データが自動的に同期されます。</p>
-    <button class="btn btn-danger btn-block" id="btnSignOut">サインアウト</button>
-  `;
-  overlay.classList.remove('hidden');
-  document.getElementById('modalCloseX').onclick = closeModal;
-  document.getElementById('btnSignOut').onclick = async ()=>{
-    await fbAuth.signOut();
-    closeModal();
-  };
+
+  const code = getSyncCode();
+
+  if(code){
+    content.innerHTML = `
+      <button class="modal-close-x" id="modalCloseX">✕</button>
+      <div class="modal-handle"></div>
+      <p class="modal-title">☁️ 同期設定</p>
+      <p class="sync-status-line">この端末は同期コードでつながっています。他の端末で同じコードを入力すると、同じデータが表示されます。</p>
+      <label class="field-label">同期コード</label>
+      <div style="display:flex; gap:8px;">
+        <input type="text" id="syncCodeDisplay" value="${escapeHtml(code)}" readonly style="letter-spacing:2px; font-weight:700;">
+        <button class="btn btn-outline btn-sm" id="btnCopyCode">コピー</button>
+      </div>
+      <p class="field-hint" id="copyHint">&nbsp;</p>
+      <div class="btn-row">
+        <button class="btn btn-danger btn-block" id="btnDisconnectSync">この端末の同期を解除</button>
+      </div>
+    `;
+    overlay.classList.remove('hidden');
+    document.getElementById('modalCloseX').onclick = closeModal;
+    document.getElementById('btnCopyCode').onclick = async ()=>{
+      const hint = document.getElementById('copyHint');
+      try{
+        await navigator.clipboard.writeText(code);
+        hint.textContent = 'コピーしました';
+      }catch(e){
+        hint.textContent = '手動で選択してコピーしてください';
+      }
+    };
+    document.getElementById('btnDisconnectSync').onclick = ()=>{
+      if(!confirm('この端末の同期を解除します。データはこの端末にそのまま残ります。よろしいですか？')) return;
+      disconnectSync();
+      closeModal();
+      updateCloudStatusUI();
+    };
+  }else{
+    content.innerHTML = `
+      <button class="modal-close-x" id="modalCloseX">✕</button>
+      <div class="modal-handle"></div>
+      <p class="modal-title">☁️ 同期設定</p>
+      <p class="sync-status-line">同期コードを使うと、ログイン不要で他の端末とデータを共有できます。</p>
+
+      <p class="field-label" style="margin-top:4px;">はじめての場合</p>
+      <button class="btn btn-primary btn-block" id="btnStartNewSync">この端末のデータで同期を始める</button>
+      <p class="field-hint">今この端末にあるデータをもとに、新しい同期コードを発行します。</p>
+
+      <p class="field-label" style="margin-top:20px;">他の端末で発行したコードをお持ちの場合</p>
+      <input type="text" id="joinCodeInput" placeholder="例）AB12CD34EF" style="letter-spacing:2px;">
+      <p class="sync-status-line" id="joinError" style="color:var(--danger); font-weight:700; margin-top:8px;"></p>
+      <button class="btn btn-outline btn-block" id="btnJoinSync">このコードで接続する</button>
+    `;
+    overlay.classList.remove('hidden');
+    document.getElementById('modalCloseX').onclick = closeModal;
+    document.getElementById('btnStartNewSync').onclick = async ()=>{
+      const newCode = generateSyncCode();
+      try{
+        await connectSyncCode(newCode, { createIfMissing: true });
+        closeModal();
+        updateCloudStatusUI();
+        render();
+      }catch(e){
+        console.error(e);
+        alert('同期の開始に失敗しました。しばらくしてから再度お試しください。');
+      }
+    };
+    document.getElementById('btnJoinSync').onclick = async ()=>{
+      const typed = document.getElementById('joinCodeInput').value.trim().toUpperCase();
+      const errEl = document.getElementById('joinError');
+      errEl.textContent = '';
+      if(!typed){ errEl.textContent = 'コードを入力してください。'; return; }
+      try{
+        await connectSyncCode(typed, { createIfMissing: false });
+        closeModal();
+        updateCloudStatusUI();
+        render();
+      }catch(e){
+        if(e.code==='NOT_FOUND'){
+          errEl.textContent = 'そのコードのデータが見つかりませんでした。コードを確認してください。';
+        }else{
+          console.error(e);
+          errEl.textContent = '接続に失敗しました。しばらくしてから再度お試しください。';
+        }
+      }
+    };
+  }
 }
 
 /* ==========================================================
@@ -2118,14 +2089,13 @@ document.querySelectorAll('.tab-btn').forEach(btn=>{
   btn.addEventListener('click', ()=> switchTab(btn.dataset.tab));
 });
 document.getElementById('titleEditBtn').addEventListener('click', openTitleModal);
-document.getElementById('cloudSyncBtn').addEventListener('click', openCloudStatusModal);
-setupSyncGateEvents();
+document.getElementById('cloudSyncBtn').addEventListener('click', openSyncSettingsModal);
 
 (async function init(){
   await loadData();
   if(!storageAvailable) showStorageWarning();
   switchTab('top');
-  initFirebase();
+  await initFirebase();
   updateCloudStatusUI();
 })();
 </script>
