@@ -29,11 +29,12 @@
 //
 // ==========================================================
 
-window.FIREBASE_CONFIG = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
-};
+  const firebaseConfig = {
+    apiKey: "AIzaSyBgpCcIalVHppZyynjwVEn0Bjf0raMl6dE",
+    authDomain: "to-do-d2cf2.firebaseapp.com",
+    projectId: "to-do-d2cf2",
+    storageBucket: "to-do-d2cf2.firebasestorage.app",
+    messagingSenderId: "310346797557",
+    appId: "1:310346797557:web:e23e5945528f577d22d0bc",
+    measurementId: "G-83B3F9J558"
+  };
