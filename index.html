@@ -920,6 +920,13 @@ async function initFirebase(){
     firebase.initializeApp(window.FIREBASE_CONFIG);
     fbAuth = firebase.auth();
     fbDb = firebase.firestore();
+    // iPhoneの「プライベートリレー」や一部のネットワーク・拡張機能でFirestoreの
+    // 通常の通信方式が塞がれ "unavailable" になることがあるため、
+    // 互換性の高いロングポーリング方式を使う。
+    fbDb.settings({
+      experimentalAutoDetectLongPolling: true,
+      useFetchStreams: false
+    });
     await ensureAnonAuth();
     const code = getSyncCode();
     if(code){
