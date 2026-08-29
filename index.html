@@ -919,15 +919,7 @@ async function initFirebase(){
   try{
     firebase.initializeApp(window.FIREBASE_CONFIG);
     fbAuth = firebase.auth();
-    // このプロジェクトのFirestoreは "(default)" ではなく "default" という
-    // 名前付きデータベースとして作成されているため、明示的に指定する。
-    // （万一このAPIが使えない環境向けに、失敗時は標準のdefaultにフォールバックする）
-    try{
-      fbDb = firebase.firestore(firebase.app(), 'default');
-    }catch(dbErr){
-      console.error('名前付きデータベースの指定に失敗。標準のdefaultにフォールバックします', dbErr);
-      fbDb = firebase.firestore();
-    }
+    fbDb = firebase.firestore();
     // iPhoneの「プライベートリレー」や一部のネットワーク・拡張機能でFirestoreの
     // 通常の通信方式が塞がれ "unavailable" になることがあるため、
     // 互換性の高いロングポーリング方式を使う。
