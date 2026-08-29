@@ -1089,7 +1089,7 @@ function openSyncSettingsModal(){
         render();
       }catch(e){
         console.error(e);
-        alert('同期の開始に失敗しました。しばらくしてから再度お試しください。');
+        alert('同期の開始に失敗しました。\nエラー内容: ' + (e && (e.code || e.message) || e));
       }
     };
     document.getElementById('btnJoinSync').onclick = async ()=>{
@@ -1107,7 +1107,7 @@ function openSyncSettingsModal(){
           errEl.textContent = 'そのコードのデータが見つかりませんでした。コードを確認してください。';
         }else{
           console.error(e);
-          errEl.textContent = '接続に失敗しました。しばらくしてから再度お試しください。';
+          errEl.textContent = '接続に失敗しました。エラー内容: ' + (e && (e.code || e.message) || e);
         }
       }
     };
