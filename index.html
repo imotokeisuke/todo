@@ -180,9 +180,10 @@
   .btn-danger{background:var(--danger-bg);color:var(--danger);}
   .btn-do{background:var(--do-bg);color:var(--do);}
   .btn-to{background:var(--gray-bg);color:var(--ink-soft);}
+  .btn-undone{background:var(--danger);color:#fff;}
   .btn-sm{padding:9px 12px;font-size:12.5px;border-radius:9px;}
   .btn-block{width:100%;}
-  .btn-row{display:flex;gap:8px;margin-top:14px;}
+  .btn-row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;}
   .btn-row .btn{flex:1;}
 
   /* ---- today panel ---- */
@@ -217,6 +218,7 @@
   .to-item.status-due{border-left-color:var(--due); background:var(--due-bg);}
   .to-item.status-review{border-left-color:var(--review); background:var(--review-bg);}
   .to-item.status-overdue{border-left-color:var(--danger); background:var(--danger-bg);}
+  .to-item.status-undone{border-left-color:var(--danger); background:var(--danger-bg);}
   .to-item .to-main{flex:1; min-width:0;}
   .to-item .to-title{
     font-weight:700;
@@ -255,6 +257,7 @@
   .to-item.status-due .to-badge{background:var(--due);color:#fff;}
   .to-item.status-review .to-badge{background:var(--review);color:#fff;}
   .to-item.status-overdue .to-badge{background:var(--danger);color:#fff;}
+  .to-item.status-undone .to-badge{background:var(--danger);color:#fff;}
   .modal-url-link{
     display:inline-block;
     margin-top:8px;
@@ -369,6 +372,7 @@
   }
   .bar-do{background:var(--do);}
   .bar-to{background:var(--gray);}
+  .bar-undone{background:var(--danger);}
 
   /* ---- legend ---- */
   .legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:12px;}
@@ -670,6 +674,8 @@ function formatDateShort(dateStr){
   return `${m}/${d}`;
 }
 function itemColor(itemId){
+  const item = appData.items.find(i=>i.id===itemId);
+  if(item && item.color) return item.color;
   const idx = appData.items.findIndex(i=>i.id===itemId);
   return ITEM_COLORS[idx>=0 ? idx % ITEM_COLORS.length : 0];
 }
@@ -840,9 +846,10 @@ async function loadData(){
   await saveData();
 }
 function migrateData(){
-  // 既存アイテムに復習リマインド設定を追加（既存データは維持）
+  // 既存アイテムに復習リマインド設定・達成度集計設定を追加（既存データは維持）
   appData.items.forEach(it=>{
     if(typeof it.reviewReminder !== 'boolean') it.reviewReminder = false;
+    if(typeof it.achievementTracking !== 'boolean') it.achievementTracking = false;
   });
   // 既存のDO済みTOにdoneAt(完了日)を補完（既存データは維持）
   appData.todos.forEach(t=>{
@@ -1142,6 +1149,7 @@ function todoDisplayStatus(todo){
   if(todo.status === 'DO'){
     return isReviewDue(todo) ? 'REVIEW' : 'DO';
   }
+  if(todo.status === 'UNDONE') return 'UNDONE';
   if(todo.deadline < todayStr()) return 'OVERDUE';
   if(todo.deadline === todayStr()) return 'DUE';
   return 'TO';
@@ -1152,6 +1160,7 @@ function todoStatusClass(todo){
   if(s==='DO') return 'status-do';
   if(s==='DUE') return 'status-due';
   if(s==='OVERDUE') return 'status-overdue';
+  if(s==='UNDONE') return 'status-undone';
   return '';
 }
 function todoBadgeText(todo){
@@ -1160,6 +1169,7 @@ function todoBadgeText(todo){
   if(s==='DO') return '完了';
   if(s==='DUE') return '本日期限';
   if(s==='OVERDUE') return '期限切れ';
+  if(s==='UNDONE') return '未達成';
   return '未完了';
 }
 
@@ -1232,9 +1242,48 @@ function renderTop(){
   const itemStats = visibleItems.map(it=>{
     const todos = appData.todos.filter(t=>t.itemId===it.id);
     const doCount = todos.filter(t=>t.status==='DO').length;
-    const toCount = todos.filter(t=>t.status!=='DO').length;
+    const toCount = todos.filter(t=>t.status==='TO').length;
     return { item: it, doCount, toCount, total: doCount+toCount };
   });
+
+  // 達成度（「達成度を集計する」が有効なアイテムのみ。期限が今日までのTOが対象）
+  const achievementItems = visibleItems.filter(it=>it.achievementTracking);
+  let achievementHtml;
+  if(appData.items.length===0){
+    achievementHtml = `<div class="empty-state"><div class="glyph">%</div>アイテムを作成すると、ここに達成度を表示できます</div>`;
+  }else if(achievementItems.length===0){
+    achievementHtml = `<div class="empty-state"><div class="glyph">%</div>アイテムの編集画面で「達成度を集計する」を有効にすると、ここに表示されます</div>`;
+  }else{
+    achievementHtml = achievementItems.map(it=>{
+      const due = appData.todos.filter(t=>t.itemId===it.id && t.deadline && t.deadline<=today);
+      const doCount = due.filter(t=>t.status==='DO').length;
+      const undoneCount = due.filter(t=>t.status==='UNDONE').length;
+      const toCount = due.filter(t=>t.status!=='DO' && t.status!=='UNDONE').length;
+      const total = due.length;
+      if(total===0){
+        return `
+        <div class="bar-row">
+          <div class="bar-label"><span>${escapeHtml(it.name)}</span><span class="cnt">対象のTOがまだありません</span></div>
+        </div>`;
+      }
+      const rate = Math.round(doCount/total*100);
+      const doPct = (doCount/total*100).toFixed(1);
+      const undonePct = (undoneCount/total*100).toFixed(1);
+      const toPct = (toCount/total*100).toFixed(1);
+      return `
+      <div class="bar-row">
+        <div class="bar-label">
+          <span>${escapeHtml(it.name)}</span>
+          <span class="cnt">達成度 ${rate}%（DO ${doCount}・UNDONE ${undoneCount}・TO ${toCount}）</span>
+        </div>
+        <div class="bar-track">
+          <div class="bar-to" style="width:${toPct}%"></div>
+          <div class="bar-do" style="width:${doPct}%"></div>
+          <div class="bar-undone" style="width:${undonePct}%"></div>
+        </div>
+      </div>`;
+    }).join('');
+  }
 
   // フィルターチップ（両グラフ共通）
   let filterHtml = '';
@@ -1333,12 +1382,17 @@ function renderTop(){
     </div>
 
     <div class="card">
-      <p class="section-title"><span class="num">3</span>完了タスクの内訳</p>
+      <p class="section-title"><span class="num">3</span>達成度</p>
+      ${achievementHtml}
+    </div>
+
+    <div class="card">
+      <p class="section-title"><span class="num">4</span>完了タスクの内訳</p>
       ${pieSvg}
     </div>
 
     <div class="card">
-      <p class="section-title"><span class="num">4</span>アイテム別 進捗（DO多い順）</p>
+      <p class="section-title"><span class="num">5</span>アイテム別 進捗（DO多い順）</p>
       ${barsHtml}
     </div>
   `;
@@ -1557,17 +1611,32 @@ function openItemModal(itemId){
   const item = isEdit ? appData.items.find(i=>i.id===itemId) : null;
   const overlay = document.getElementById('modalOverlay');
   const content = document.getElementById('modalContent');
+  const colorValue = item ? itemColor(item.id) : ITEM_COLORS[appData.items.length % ITEM_COLORS.length];
   content.innerHTML = `
     <button class="modal-close-x" id="modalCloseX">✕</button>
     <div class="modal-handle"></div>
     <p class="modal-title">${isEdit ? 'アイテム編集' : 'アイテム作成'}</p>
     <label class="field-label">アイテム名</label>
     <input type="text" id="newItemName" placeholder="例）英語学習、半導体投資 など" maxlength="40" value="${item?escapeHtml(item.name):''}">
+
+    <label class="field-label">アイテムの色</label>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <input type="color" id="newItemColor" value="${colorValue}" style="width:52px; height:40px; padding:2px; border-radius:10px; border:1.5px solid var(--line-strong); background:var(--paper);">
+      <span class="field-hint" style="margin:0;">グラフや一覧で使う色です</span>
+    </div>
+
     <label class="checkbox-row">
       <input type="checkbox" id="newItemReminder" ${item&&item.reviewReminder?'checked':''}>
       復習リマインドを有効にする
     </label>
     <p class="checkbox-hint">DOにした日から3日目（2日後）に「復習」ステータスで表示します。学習系のアイテムにおすすめです。</p>
+
+    <label class="checkbox-row">
+      <input type="checkbox" id="newItemAchievement" ${item&&item.achievementTracking?'checked':''}>
+      達成度を集計する
+    </label>
+    <p class="checkbox-hint">期限が来たTOのうち、DOになった割合をTOP画面に表示します。</p>
+
     <div class="btn-row">
       <button class="btn btn-outline" id="modalCancel">キャンセル</button>
       <button class="btn btn-primary" id="modalSaveItem">${isEdit ? '保存する' : '作成する'}</button>
@@ -1580,12 +1649,16 @@ function openItemModal(itemId){
   document.getElementById('modalSaveItem').onclick = async ()=>{
     const name = document.getElementById('newItemName').value.trim();
     const reviewReminder = document.getElementById('newItemReminder').checked;
+    const achievementTracking = document.getElementById('newItemAchievement').checked;
+    const color = document.getElementById('newItemColor').value;
     if(!name){ alert('アイテム名を入力してください'); return; }
     if(isEdit){
       item.name = name;
       item.reviewReminder = reviewReminder;
+      item.achievementTracking = achievementTracking;
+      item.color = color;
     }else{
-      appData.items.push({ id: uid(), name, reviewReminder, createdAt: Date.now() });
+      appData.items.push({ id: uid(), name, reviewReminder, achievementTracking, color, createdAt: Date.now() });
     }
     await saveData();
     closeModal();
@@ -1719,8 +1792,9 @@ function openTodoModal(todoId){
 
     ${isEdit ? `
       <div class="btn-row">
-        <button class="btn btn-to btn-sm" id="btnMarkTo" ${todo.status!=='DO'?'style="display:none;"':''}>TOに戻す</button>
+        <button class="btn btn-to btn-sm" id="btnMarkTo" ${(todo.status!=='DO' && todo.status!=='UNDONE')?'style="display:none;"':''}>TOに戻す</button>
         <button class="btn btn-do btn-sm" id="btnMarkDo" ${(todo.status!=='DO' || displayStatus==='REVIEW')?'':'style="display:none;"'}>DOにする</button>
+        <button class="btn btn-undone btn-sm" id="btnMarkUndone" ${todo.status==='UNDONE'?'style="display:none;"':''}>UNDONE</button>
       </div>
     ` : ''}
 
@@ -1773,6 +1847,13 @@ function openTodoModal(todoId){
     };
     document.getElementById('btnMarkTo').onclick = async ()=>{
       todo.status = 'TO';
+      todo.doneAt = null;
+      await saveData();
+      closeModal();
+      render();
+    };
+    document.getElementById('btnMarkUndone').onclick = async ()=>{
+      todo.status = 'UNDONE';
       todo.doneAt = null;
       await saveData();
       closeModal();
