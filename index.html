@@ -793,7 +793,10 @@ function ensureSeriesGenerated(seriesId){
   const rule = existing[0].recurrence;
   const template = existing[0];
   const horizonDays = RECUR_HORIZON_DAYS[rule.unit] || 180;
-  const horizonDateStr = addDaysToDateStr(todayStr(), horizonDays);
+  let horizonDateStr = addDaysToDateStr(todayStr(), horizonDays);
+  if(rule.seriesEndDate && rule.seriesEndDate < horizonDateStr){
+    horizonDateStr = rule.seriesEndDate; // 「これ以降のTOを削除する」で設定された終了日以降は生成しない
+  }
   let n = existing.length;
   let safety = 0;
   while(safety < 200){
@@ -1968,6 +1971,7 @@ function openDeleteRecurringChoice(todo){
     <p class="checkbox-hint">このTOには定期イベント設定（${describeRecurrence(todo.recurrence)}）があります。削除方法を選んでください。</p>
     <div class="btn-row" style="flex-direction:column;">
       <button class="btn btn-outline btn-block" id="delOnlyThis" style="margin-bottom:8px;">この回だけ削除</button>
+      <button class="btn btn-danger btn-block" id="delFromHere" style="margin-bottom:8px;">これ以降のTOを削除する</button>
       <button class="btn btn-danger btn-block" id="delAllSeries" style="margin-bottom:8px;">シリーズ全て削除</button>
       <button class="btn btn-outline btn-block" id="delCancel">キャンセル</button>
     </div>
@@ -1976,6 +1980,23 @@ function openDeleteRecurringChoice(todo){
   document.getElementById('delCancel').onclick = closeModal;
   document.getElementById('delOnlyThis').onclick = async ()=>{
     appData.todos = appData.todos.filter(t=>t.id!==todo.id);
+    await saveData();
+    closeModal();
+    render();
+  };
+  document.getElementById('delFromHere').onclick = async ()=>{
+    if(!confirm(`期限 ${formatDateShort(todo.deadline)} 以降のTOをすべて削除します。よろしいですか？`)) return;
+    const seriesId = todo.recurrence.seriesId;
+    const cutoff = todo.deadline;
+    // 対象シリーズのうち、今回を含めそれ以降の期限のものを削除
+    appData.todos = appData.todos.filter(t=> !(t.recurrence && t.recurrence.seriesId===seriesId && t.deadline >= cutoff));
+    // 以降は自動生成されないよう、残った同シリーズのTOに終了日を記録する
+    const stopBefore = addDaysToDateStr(cutoff, -1);
+    appData.todos.forEach(t=>{
+      if(t.recurrence && t.recurrence.seriesId===seriesId){
+        t.recurrence = Object.assign({}, t.recurrence, { seriesEndDate: stopBefore });
+      }
+    });
     await saveData();
     closeModal();
     render();
