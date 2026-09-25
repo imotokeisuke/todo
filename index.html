@@ -792,30 +792,34 @@ function ensureSeriesGenerated(seriesId){
   if(existing.length===0) return;
   const rule = existing[0].recurrence;
   const template = existing[0];
+  const existingDeadlines = new Set(existing.map(t=>t.deadline));
   const horizonDays = RECUR_HORIZON_DAYS[rule.unit] || 180;
   let horizonDateStr = addDaysToDateStr(todayStr(), horizonDays);
   if(rule.seriesEndDate && rule.seriesEndDate < horizonDateStr){
     horizonDateStr = rule.seriesEndDate; // 「これ以降のTOを削除する」で設定された終了日以降は生成しない
   }
-  let n = existing.length;
+  let n = 0;
   let safety = 0;
-  while(safety < 200){
+  while(safety < 2000){
     const deadline = computeOccurrenceDeadline(rule, n);
     if(deadline > horizonDateStr) break;
-    appData.todos.push({
-      id: uid(),
-      itemId: template.itemId,
-      title: template.title,
-      deadline,
-      url: template.url,
-      memo: '',
-      status: 'TO',
-      doneAt: null,
-      createdAt: Date.now(),
-      reviewReminderOn: true,
-      reviewStage: 0,
-      recurrence: rule
-    });
+    if(!existingDeadlines.has(deadline)){
+      appData.todos.push({
+        id: uid(),
+        itemId: template.itemId,
+        title: template.title,
+        deadline,
+        url: template.url,
+        memo: '',
+        status: 'TO',
+        doneAt: null,
+        createdAt: Date.now(),
+        reviewReminderOn: true,
+        reviewStage: 0,
+        recurrence: rule
+      });
+      existingDeadlines.add(deadline);
+    }
     n++;
     safety++;
   }
@@ -871,6 +875,34 @@ function migrateData(){
   });
   if(!Array.isArray(appData.settings.hiddenChartItemIds)){
     appData.settings.hiddenChartItemIds = [];
+  }
+  dedupeRecurringSeries();
+}
+function dedupeRecurringSeries(){
+  // 過去のバグ等で定期TOの同一期限日への重複生成が起きていた場合に、
+  // シリーズ内で同じ期限日のものを1件に統合する（進捗があるものを優先して残す）
+  const bySeriesDate = new Map();
+  const toRemove = new Set();
+  const rank = (t)=>{
+    if(t.status==='DO' || t.status==='UNDONE') return 2;
+    if(t.memo || t.url) return 1;
+    return 0;
+  };
+  appData.todos.forEach(t=>{
+    if(!t.recurrence || !t.recurrence.seriesId) return;
+    const key = t.recurrence.seriesId + '|' + t.deadline;
+    const current = bySeriesDate.get(key);
+    if(!current){
+      bySeriesDate.set(key, t);
+    }else if(rank(t) > rank(current)){
+      toRemove.add(current.id);
+      bySeriesDate.set(key, t);
+    }else{
+      toRemove.add(t.id);
+    }
+  });
+  if(toRemove.size>0){
+    appData.todos = appData.todos.filter(t=>!toRemove.has(t.id));
   }
 }
 async function saveData(){
