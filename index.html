@@ -793,6 +793,7 @@ function ensureSeriesGenerated(seriesId){
   const rule = existing[0].recurrence;
   const template = existing[0];
   const existingDeadlines = new Set(existing.map(t=>t.deadline));
+  const deletedDates = new Set(rule.deletedDates || []); // 「この回だけ削除」「選択して削除」で消した日付は復活させない
   const horizonDays = RECUR_HORIZON_DAYS[rule.unit] || 180;
   let horizonDateStr = addDaysToDateStr(todayStr(), horizonDays);
   if(rule.seriesEndDate && rule.seriesEndDate < horizonDateStr){
@@ -803,7 +804,7 @@ function ensureSeriesGenerated(seriesId){
   while(safety < 2000){
     const deadline = computeOccurrenceDeadline(rule, n);
     if(deadline > horizonDateStr) break;
-    if(!existingDeadlines.has(deadline)){
+    if(!existingDeadlines.has(deadline) && !deletedDates.has(deadline)){
       appData.todos.push({
         id: uid(),
         itemId: template.itemId,
@@ -2003,6 +2004,7 @@ function openDeleteRecurringChoice(todo){
     <p class="checkbox-hint">このTOには定期イベント設定（${describeRecurrence(todo.recurrence)}）があります。削除方法を選んでください。</p>
     <div class="btn-row" style="flex-direction:column;">
       <button class="btn btn-outline btn-block" id="delOnlyThis" style="margin-bottom:8px;">この回だけ削除</button>
+      <button class="btn btn-outline btn-block" id="delSelectMode" style="margin-bottom:8px;">選択して削除</button>
       <button class="btn btn-danger btn-block" id="delFromHere" style="margin-bottom:8px;">これ以降のTOを削除する</button>
       <button class="btn btn-danger btn-block" id="delAllSeries" style="margin-bottom:8px;">シリーズ全て削除</button>
       <button class="btn btn-outline btn-block" id="delCancel">キャンセル</button>
@@ -2011,10 +2013,23 @@ function openDeleteRecurringChoice(todo){
   document.getElementById('modalCloseX').onclick = closeModal;
   document.getElementById('delCancel').onclick = closeModal;
   document.getElementById('delOnlyThis').onclick = async ()=>{
+    const seriesId = todo.recurrence.seriesId;
+    const deletedDate = todo.deadline;
     appData.todos = appData.todos.filter(t=>t.id!==todo.id);
+    // 今後このシリーズを自動生成する際に、削除した日付を復活させないよう記録する
+    appData.todos.forEach(t=>{
+      if(t.recurrence && t.recurrence.seriesId===seriesId){
+        const dates = new Set(t.recurrence.deletedDates || []);
+        dates.add(deletedDate);
+        t.recurrence = Object.assign({}, t.recurrence, { deletedDates: Array.from(dates) });
+      }
+    });
     await saveData();
     closeModal();
     render();
+  };
+  document.getElementById('delSelectMode').onclick = ()=>{
+    openSeriesSelectDelete(todo);
   };
   document.getElementById('delFromHere').onclick = async ()=>{
     if(!confirm(`期限 ${formatDateShort(todo.deadline)} 以降のTOをすべて削除します。よろしいですか？`)) return;
@@ -2041,6 +2056,69 @@ function openDeleteRecurringChoice(todo){
     closeModal();
     render();
   };
+}
+
+function openSeriesSelectDelete(todo){
+  const seriesId = todo.recurrence.seriesId;
+  const seriesTodos = appData.todos
+    .filter(t=>t.recurrence && t.recurrence.seriesId===seriesId)
+    .sort((a,b)=> (a.deadline||'').localeCompare(b.deadline||''));
+  const picked = new Set();
+  const content = document.getElementById('modalContent');
+
+  function renderPickList(){
+    const rows = seriesTodos.map(t=>{
+      const isPicked = picked.has(t.id);
+      return `
+        <div class="to-item ${todoStatusClass(t)} ${isPicked?'to-item-selected':''}" data-pick-todo="${t.id}">
+          <div class="to-select-box">${isPicked?'☑':'☐'}</div>
+          <div class="to-main">
+            <div class="to-title">${escapeHtml(t.title)}</div>
+            <div class="to-meta"><span>期限 ${formatDateShort(t.deadline)}</span></div>
+          </div>
+          <span class="to-badge">${todoBadgeText(t)}</span>
+        </div>`;
+    }).join('');
+    content.innerHTML = `
+      <button class="modal-close-x" id="modalCloseX">✕</button>
+      <div class="modal-handle"></div>
+      <p class="modal-title">選択して削除</p>
+      <p class="checkbox-hint">削除したいTOにチェックを付けてください。</p>
+      <div style="max-height:52vh; overflow-y:auto; margin-top:8px;">${rows}</div>
+      <div class="btn-row">
+        <button class="btn btn-outline" id="pickCancel">キャンセル</button>
+        <button class="btn btn-danger" id="pickDelete">削除する（${picked.size}件）</button>
+      </div>
+    `;
+    document.getElementById('modalCloseX').onclick = closeModal;
+    document.getElementById('pickCancel').onclick = closeModal;
+    content.querySelectorAll('[data-pick-todo]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const id = el.dataset.pickTodo;
+        if(picked.has(id)) picked.delete(id);
+        else picked.add(id);
+        renderPickList();
+      });
+    });
+    document.getElementById('pickDelete').onclick = async ()=>{
+      if(picked.size===0){ alert('削除するTOを選択してください'); return; }
+      if(!confirm(`選択した${picked.size}件のTOを削除します。よろしいですか？`)) return;
+      const deletedDates = seriesTodos.filter(t=>picked.has(t.id)).map(t=>t.deadline);
+      appData.todos = appData.todos.filter(t=>!picked.has(t.id));
+      // 今後このシリーズを自動生成する際に、削除した日付を復活させないよう記録する
+      appData.todos.forEach(t=>{
+        if(t.recurrence && t.recurrence.seriesId===seriesId){
+          const dates = new Set(t.recurrence.deletedDates || []);
+          deletedDates.forEach(d=>dates.add(d));
+          t.recurrence = Object.assign({}, t.recurrence, { deletedDates: Array.from(dates) });
+        }
+      });
+      await saveData();
+      closeModal();
+      render();
+    };
+  }
+  renderPickList();
 }
 
 function closeModal(){
