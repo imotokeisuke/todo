@@ -1246,9 +1246,8 @@ function render(){
 /* ==========================================================
    TOP 画面
    ========================================================== */
-function renderTop(){
-  const today = todayStr();
-  const todayTodos = appData.todos
+function computeTodayActionTodos(){
+  return appData.todos
     .filter(t=>{
       const s = todoDisplayStatus(t);
       return s==='DUE' || s==='OVERDUE' || s==='REVIEW';
@@ -1265,13 +1264,32 @@ function renderTop(){
       if(r !== 0) return r;
       return (a.deadline||'').localeCompare(b.deadline||'');
     });
+}
+
+function renderTop(){
+  const today = todayStr();
+  const todayTodos = computeTodayActionTodos();
 
   let todayHtml = '';
   if(todayTodos.length===0){
     todayHtml = `<p class="today-empty">対応が必要なTOはありません。</p>`;
   }else{
-    todayHtml = todayTodos.map(t=>renderTodoCard(t)).join('');
+    todayHtml = todayTodos.map(t=>renderTodoCard(t, true, todoSelectMode)).join('');
   }
+
+  const todaySelectBar = todayTodos.length===0 ? '' : (todoSelectMode ? `
+    <div class="select-action-bar">
+      <span class="select-count">${selectedTodoIds.size}件選択中</span>
+      <div class="select-action-buttons">
+        <button class="chart-filter-link" id="btnSelectAllTodos">全て選択</button>
+        <button class="chart-filter-link" id="btnSelectNoneTodos">選択解除</button>
+      </div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn btn-outline" id="btnCancelSelectTodos">キャンセル</button>
+        <button class="btn btn-danger" id="btnDeleteSelectedTodos">削除する</button>
+      </div>
+    </div>
+  ` : `<button class="chart-filter-link" id="btnEnterSelectTodos" style="margin-bottom:12px;">まとめて削除</button>`);
 
   // 完了(DO)数を集計（表示アイテムでフィルター）
   const visibleItems = appData.items.filter(it=>isItemVisibleInCharts(it.id));
@@ -1407,6 +1425,7 @@ function renderTop(){
   return `
     <div class="card">
       <p class="section-title"><span class="num">1</span>${formatDateJP(today)}・対応が必要なTO</p>
+      ${todaySelectBar}
       ${todayHtml}
     </div>
 
@@ -2184,7 +2203,7 @@ function attachScreenEvents(){
   });
   const btnSelectAllTodos = document.getElementById('btnSelectAllTodos');
   if(btnSelectAllTodos) btnSelectAllTodos.addEventListener('click', ()=>{
-    const todos = appData.todos.filter(t=>t.itemId===selectedItemId);
+    const todos = currentTab==='top' ? computeTodayActionTodos() : appData.todos.filter(t=>t.itemId===selectedItemId);
     selectedTodoIds = new Set(todos.map(t=>t.id));
     render();
   });
@@ -2197,7 +2216,24 @@ function attachScreenEvents(){
   if(btnDeleteSelectedTodos) btnDeleteSelectedTodos.addEventListener('click', async ()=>{
     if(selectedTodoIds.size===0){ alert('削除するTOを選択してください'); return; }
     if(!confirm(`選択した${selectedTodoIds.size}件のTOを削除しますか？`)) return;
+    const toDelete = appData.todos.filter(t=>selectedTodoIds.has(t.id));
     appData.todos = appData.todos.filter(t=>!selectedTodoIds.has(t.id));
+    // 定期TOが含まれる場合、削除した日付を記録して自動生成で復活しないようにする
+    const bySeries = {};
+    toDelete.forEach(t=>{
+      if(t.recurrence && t.recurrence.seriesId){
+        (bySeries[t.recurrence.seriesId] = bySeries[t.recurrence.seriesId] || []).push(t.deadline);
+      }
+    });
+    Object.keys(bySeries).forEach(seriesId=>{
+      appData.todos.forEach(t=>{
+        if(t.recurrence && t.recurrence.seriesId===seriesId){
+          const dates = new Set(t.recurrence.deletedDates || []);
+          bySeries[seriesId].forEach(d=>dates.add(d));
+          t.recurrence = Object.assign({}, t.recurrence, { deletedDates: Array.from(dates) });
+        }
+      });
+    });
     todoSelectMode = false;
     selectedTodoIds = new Set();
     await saveData();
